@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/go-chi/httprate"
 )
 
 type ExcuseResponse struct {
@@ -48,7 +50,6 @@ func randomIndex(n int) int {
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	// Optional: allow browser calls (handy for testing)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
@@ -56,10 +57,17 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeTxt(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	// Optional: allow browser calls (handy for testing)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(msg))
+}
+
+// Prefer Cloudflare real client IP, otherwise fall back to standard IP logic.
+func keyByCFOrIP(r *http.Request) (string, error) {
+	if ip := r.Header.Get("CF-Connecting-IP"); ip != "" {
+		return ip, nil
+	}
+	return httprate.KeyByIP(r)
 }
 
 func main() {
@@ -80,28 +88,38 @@ func main() {
 		})
 	})
 
-	// Random excuse (JSON)
-	// mux.HandleFunc("/excuse", func(w http.ResponseWriter, r *http.Request) {
-	// 	i := randomIndex(len(excuses))
-	// 	writeJSON(w, 200, ExcuseResponse{
-	// 		Excuse: excuses[i],
-	// 	})
-	// })
-
-	// Random excuse (plain text) — great for shortcuts/curl
+	// Random excuse (plain text) — your current behavior
 	mux.HandleFunc("/excuse", func(w http.ResponseWriter, r *http.Request) {
 		i := randomIndex(len(excuses))
 		writeTxt(w, 200, excuses[i])
 	})
 
+	// Optional: Random excuse (JSON) at /excuse.json
+	mux.HandleFunc("/excuse.json", func(w http.ResponseWriter, r *http.Request) {
+		i := randomIndex(len(excuses))
+		writeJSON(w, 200, ExcuseResponse{Excuse: excuses[i]})
+	})
+
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080" // Cloud Run uses PORT env; default 8080 works locally too
+		port = "8080"
 	}
+
+	// Rate limiter: 120 req/min per IP (Cloudflare-aware)
+	handler := httprate.Limit(
+		120,
+		time.Minute,
+		httprate.WithKeyFuncs(keyByCFOrIP),
+		httprate.WithLimitHandler(func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{
+				"error": "Too many requests, please try again later.",
+			})
+		}),
+	)(mux)
 
 	server := &http.Server{
 		Addr:              ":" + port,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

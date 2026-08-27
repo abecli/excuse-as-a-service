@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for building and running a Go API server
 # Build stage
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 WORKDIR /app
 COPY go.mod ./
 RUN go mod download
